@@ -115,7 +115,13 @@ def main(args, ITE=0):
 
     # Optimizer and Loss
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss
-    optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
+    if args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    elif args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
+    else:
+        print("\nWrong Optimizer choice\n")
+        exit()
 
     # Layer Looper
     for name, param in model.named_parameters():
@@ -162,7 +168,10 @@ def main(args, ITE=0):
                 step = 0
             else:
                 original_initialization(mask, initial_state_dict)
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+            if args.optimizer == 'adam':
+                optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+            elif args.optimizer == 'sgd':
+                optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
         print(f"\n--- Pruning Level [{ITE}:{_ite}/{ITERATION}]: ---")
 
         # Print the table of Nonzeros in each layer
@@ -433,6 +442,7 @@ if __name__=="__main__":
     parser.add_argument("--arch_type", default="fc1", type=str, help="fc1 | lenet5 | alexnet | vgg16 | resnet18 | resnet9 | densenet121")
     parser.add_argument("--prune_percent", default=10, type=int, help="Pruning percent")
     parser.add_argument("--prune_iterations", default=35, type=int, help="Pruning iterations count")
+    parser.add_argument("--optimizer", default='adam', type=str, help="adam | sgd")
 
     
     args = parser.parse_args()
