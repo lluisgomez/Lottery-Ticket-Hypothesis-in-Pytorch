@@ -3,6 +3,7 @@ import argparse
 import copy
 import os
 import sys
+import bisect
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -115,10 +116,17 @@ def main(args, ITE=0):
 
     # Optimizer and Loss
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss
+
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        scheduler = None
     elif args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
+        gamma = 0.1
+        lambdas = [lambda it: 1.0]
+        milestones = [80*len(train_loader), 120*len(train_loader)]
+        lambdas.append(lambda it: gamma ** bisect.bisect(milestones, it))
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda it: np.product([l(it) for l in lambdas])) 
     else:
         print("\nWrong Optimizer choice\n")
         exit()
@@ -170,8 +178,14 @@ def main(args, ITE=0):
                 original_initialization(mask, initial_state_dict)
             if args.optimizer == 'adam':
                 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+                scheduler = None
             elif args.optimizer == 'sgd':
                 optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
+                gamma = 0.1
+                lambdas = [lambda it: 1.0]
+                milestones = [80*len(train_loader), 120*len(train_loader)]
+                lambdas.append(lambda it: gamma ** bisect.bisect(milestones, it))
+                scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda it: np.product([l(it) for l in lambdas])) 
         print(f"\n--- Pruning Level [{ITE}:{_ite}/{ITERATION}]: ---")
 
         # Print the table of Nonzeros in each layer
@@ -192,7 +206,7 @@ def main(args, ITE=0):
                     torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth.tar")
 
             # Training
-            loss = train(model, train_loader, optimizer, criterion)
+            loss = train(model, train_loader, optimizer, criterion, scheduler)
             all_loss[iter_] = loss
             all_accuracy[iter_] = accuracy
             
@@ -253,7 +267,7 @@ def main(args, ITE=0):
     plt.close()                    
    
 # Function for Training
-def train(model, train_loader, optimizer, criterion):
+def train(model, train_loader, optimizer, criterion, lr_scheduler):
     EPS = 1e-6
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
@@ -273,6 +287,8 @@ def train(model, train_loader, optimizer, criterion):
                 grad_tensor = torch.where(tensor.abs() < EPS, torch.zeros_like(grad_tensor), grad_tensor)
                 p.grad.data = grad_tensor
         optimizer.step()
+        if lr_scheduler != None:
+            lr_scheduler.step()
     return train_loss.item()
 
 # Function for Testing
