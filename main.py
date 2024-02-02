@@ -34,24 +34,39 @@ def main(args, ITE=0):
     reinit = True if args.prune_type=="reinit" else False
 
     # Data Loader
-    transform=transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.1307,), (0.3081,))])
     if args.dataset == "mnist":
+        transform=transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.1307,), (0.3081,))])
         traindataset = datasets.MNIST('../data', train=True, download=True,transform=transform)
         testdataset = datasets.MNIST('../data', train=False, transform=transform)
         from archs.mnist import AlexNet, LeNet5, fc1, vgg, resnet
 
-    elif args.dataset == "cifar10":
-        traindataset = datasets.CIFAR10('../data', train=True, download=True,transform=transform)
-        testdataset = datasets.CIFAR10('../data', train=False, transform=transform)      
-        from archs.cifar10 import AlexNet, LeNet5, fc1, vgg, resnet, densenet 
-
     elif args.dataset == "fashionmnist":
+        transform=transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.2860,), (0.3530,))])
         traindataset = datasets.FashionMNIST('../data', train=True, download=True,transform=transform)
         testdataset = datasets.FashionMNIST('../data', train=False, transform=transform)
         from archs.mnist import AlexNet, LeNet5, fc1, vgg, resnet 
 
+    elif args.dataset == "cifar10":
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261)),
+        ])
+        traindataset = datasets.CIFAR10('../data', train=True, download=True,transform=train_transform)
+        transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))])
+        testdataset = datasets.CIFAR10('../data', train=False, transform=transform)      
+        from archs.cifar10 import AlexNet, LeNet5, fc1, vgg, resnet, densenet 
+
     elif args.dataset == "cifar100":
-        traindataset = datasets.CIFAR100('../data', train=True, download=True,transform=transform)
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+        ])
+        traindataset = datasets.CIFAR100('../data', train=True, download=True,transform=train_transform)
+        transform = transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))])
         testdataset = datasets.CIFAR100('../data', train=False, transform=transform)   
         from archs.cifar100 import AlexNet, fc1, LeNet5, vgg, resnet  
     
@@ -61,9 +76,9 @@ def main(args, ITE=0):
         print("\nWrong Dataset choice \n")
         exit()
 
-    train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=0,drop_last=False)
+    train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=10,drop_last=False)
     #train_loader = cycle(train_loader)
-    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=0,drop_last=True)
+    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=10,drop_last=True)
     
     # Importing Network Architecture
     global model
@@ -77,6 +92,8 @@ def main(args, ITE=0):
         model = vgg.vgg16().to(device)  
     elif args.arch_type == "resnet18":
         model = resnet.resnet18().to(device)   
+    elif args.arch_type == "resnet9":
+        model = resnet.ResNet9().to(device)   
     elif args.arch_type == "densenet121":
         model = densenet.densenet121().to(device)   
     # If you want to add extra model paste here
@@ -87,6 +104,7 @@ def main(args, ITE=0):
     # Weight Initialization
     model.apply(weight_init)
 
+
     # Copying and Saving Initial State
     initial_state_dict = copy.deepcopy(model.state_dict())
     utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
@@ -96,8 +114,8 @@ def main(args, ITE=0):
     make_mask(model)
 
     # Optimizer and Loss
-    optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss
+    optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
 
     # Layer Looper
     for name, param in model.named_parameters():
@@ -241,10 +259,10 @@ def train(model, train_loader, optimizer, criterion):
         # Freezing Pruned weights by making their gradients Zero
         for name, p in model.named_parameters():
             if 'weight' in name:
-                tensor = p.data.cpu().numpy()
-                grad_tensor = p.grad.data.cpu().numpy()
-                grad_tensor = np.where(tensor < EPS, 0, grad_tensor)
-                p.grad.data = torch.from_numpy(grad_tensor).to(device)
+                tensor = p.data
+                grad_tensor = p.grad
+                grad_tensor = torch.where(tensor.abs() < EPS, torch.zeros_like(grad_tensor), grad_tensor)
+                p.grad.data = grad_tensor
         optimizer.step()
     return train_loss.item()
 
@@ -270,10 +288,15 @@ def prune_by_percentile(percent, resample=False, reinit=False,**kwargs):
         global step
         global mask
         global model
+        global args
 
         # Calculate percentile value
         step = 0
         for name, param in model.named_parameters():
+
+            # We do not prune the FC layer in deep CNNs
+            if ('fc' in name) and ('resnet' in args.arch_type):
+               continue
 
             # We do not prune bias term
             if 'weight' in name:
@@ -407,7 +430,7 @@ if __name__=="__main__":
     parser.add_argument("--prune_type", default="lt", type=str, help="lt | reinit")
     parser.add_argument("--gpu", default="0", type=str)
     parser.add_argument("--dataset", default="mnist", type=str, help="mnist | cifar10 | fashionmnist | cifar100")
-    parser.add_argument("--arch_type", default="fc1", type=str, help="fc1 | lenet5 | alexnet | vgg16 | resnet18 | densenet121")
+    parser.add_argument("--arch_type", default="fc1", type=str, help="fc1 | lenet5 | alexnet | vgg16 | resnet18 | resnet9 | densenet121")
     parser.add_argument("--prune_percent", default=10, type=int, help="Pruning percent")
     parser.add_argument("--prune_iterations", default=35, type=int, help="Pruning iterations count")
 
